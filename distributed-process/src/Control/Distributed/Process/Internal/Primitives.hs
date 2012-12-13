@@ -12,6 +12,8 @@ module Control.Distributed.Process.Internal.Primitives
   , receiveChan
   , mergePortsBiased
   , mergePortsRR
+  , receiveWaitChans
+  , receiveTimeoutChans
     -- * Advanced messaging
   , Match
   , receiveWait
@@ -21,6 +23,7 @@ module Control.Distributed.Process.Internal.Primitives
   , matchUnknown
   , AbstractMessage(..)
   , matchAny
+  , matchChan
     -- * Process management
   , terminate
   , ProcessTerminationException(..)
@@ -101,6 +104,7 @@ import Control.Concurrent.STM
   ( STM
   , TVar
   , atomically
+  , retry
   , orElse
   , newTVar
   , readTVar
@@ -260,11 +264,21 @@ mergePortsRR = \ps -> do
 -- | Opaque type used in 'receiveWait' and 'receiveTimeout'
 newtype Match b = Match { unMatch :: Message -> Maybe (Process b) }
 
+-- | Opaque type used in 'receiveWaitChans' and 'receiveTimeoutChans'
+newtype MatchChan b = MatchChan { unMatchChan :: STM (Process b) }
+
 -- | Test the matches in order against each message in the queue
 receiveWait :: [Match b] -> Process b
 receiveWait ms = do
   queue <- processQueue <$> ask
+  Just proc <- liftIO $ dequeue queue Blocking (map unMatch ms) retry
+  proc
+
+receiveWaitChans :: [Match b] -> [MatchChan b] -> Process b
+receiveWaitChans ms chans = do
+  queue <- processQueue <$> ask
   Just proc <- liftIO $ dequeue queue Blocking (map unMatch ms)
+                                               (matchChans chans)
   proc
 
 -- | Like 'receiveWait' but with a timeout.
@@ -276,10 +290,23 @@ receiveTimeout :: Int -> [Match b] -> Process (Maybe b)
 receiveTimeout t ms = do
   queue <- processQueue <$> ask
   let blockSpec = if t == 0 then NonBlocking else Timeout t
-  mProc <- liftIO $ dequeue queue blockSpec (map unMatch ms)
+  mProc <- liftIO $ dequeue queue blockSpec (map unMatch ms) retry
   case mProc of
     Nothing   -> return Nothing
     Just proc -> Just <$> proc
+
+receiveTimeoutChans :: Int -> [Match b] -> [MatchChan b] -> Process (Maybe b)
+receiveTimeoutChans t ms chans = do
+  queue <- processQueue <$> ask
+  let blockSpec = if t == 0 then NonBlocking else Timeout t
+  mProc <- liftIO $ dequeue queue blockSpec (map unMatch ms)
+                                            (matchChans chans)
+  case mProc of
+    Nothing   -> return Nothing
+    Just proc -> Just <$> proc
+
+matchChans :: [MatchChan b] -> STM (Process b)
+matchChans = foldr orElse retry . map unMatchChan
 
 -- | Match against any message of the right type
 match :: forall a b. Serializable a => (a -> Process b) -> Match b
@@ -297,6 +324,10 @@ matchIf c p = Match $ \msg ->
          -- the values immediately
          !decoded = decode (messageEncoding msg)
      _ -> Nothing
+
+
+matchChan :: ReceivePort a -> (a -> Process b) -> MatchChan b
+matchChan p fn = MatchChan (fmap fn (receiveSTM p))
 
 data AbstractMessage = AbstractMessage {
     forward :: ProcessId -> Process ()

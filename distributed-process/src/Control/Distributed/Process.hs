@@ -30,6 +30,8 @@ module Control.Distributed.Process
   , receiveChanTimeout
   , mergePortsBiased
   , mergePortsRR
+  , receiveWaitChans
+  , receiveTimeoutChans
     -- * Advanced messaging
   , Match
   , receiveWait
@@ -39,6 +41,7 @@ module Control.Distributed.Process
   , matchUnknown
   , AbstractMessage(..)
   , matchAny
+  , matchChan
     -- * Process management
   , spawn
   , call
@@ -180,6 +183,8 @@ import Control.Distributed.Process.Internal.Primitives
   , receiveChan
   , mergePortsBiased
   , mergePortsRR
+  , receiveWaitChans
+  , receiveTimeoutChans
     -- Advanced messaging
   , Match
   , receiveWait
@@ -189,6 +194,7 @@ import Control.Distributed.Process.Internal.Primitives
   , matchUnknown
   , AbstractMessage(..)
   , matchAny
+  , matchChan
     -- Process management
   , terminate
   , ProcessTerminationException(..)

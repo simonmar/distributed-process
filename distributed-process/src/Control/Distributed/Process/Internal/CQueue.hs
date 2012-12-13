@@ -11,12 +11,13 @@ module Control.Distributed.Process.Internal.CQueue
 
 import Prelude hiding (length, reverse)
 import Control.Concurrent.STM
-  ( atomically
+  ( STM
+  , atomically
   , TChan
   , newTChan
   , writeTChan
   , readTChan
-  , tryReadTChan
+  , orElse
   )
 import Control.Applicative ((<$>), (<*>))
 import Control.Exception (mask, onException)
@@ -63,8 +64,9 @@ dequeue :: forall a b.
            CQueue a          -- ^ Queue
         -> BlockSpec         -- ^ Blocking behaviour
         -> [a -> Maybe b]    -- ^ List of matches
+        -> STM b             -- ^ Other things to wait for (e.g. Channels)
         -> IO (Maybe b)      -- ^ 'Nothing' only on timeout
-dequeue (CQueue arrived incoming) blockSpec matches = go
+dequeue (CQueue arrived incoming) blockSpec matches readchans = go
   where
     go :: IO (Maybe b)
     go = mask $ \restore -> do
@@ -92,6 +94,8 @@ dequeue (CQueue arrived incoming) blockSpec matches = go
         Just y  -> return (reverse' acc xs, Just y)
         Nothing -> checkArrived (Cons x acc) xs
 
+    waitIncoming = fmap Left (readTChan incoming) `orElse` fmap Right readchans
+
     -- If we call checkBlocking there may or may not be a timeout
     checkBlocking :: StrictList a -> IO b
     checkBlocking acc = do
@@ -99,22 +103,30 @@ dequeue (CQueue arrived incoming) blockSpec matches = go
       -- interrupted, we put the value of the accumulator in 'arrived'
       -- (as opposed to the original value), so that no messages get lost
       -- (hence the low-level structure using mask rather than modifyMVar)
-      x <- onException (atomically $ readTChan incoming)
+      x <- onException (atomically waitIncoming)
                        (putMVar arrived $ reverse acc)
-      case check x of
-        Nothing -> checkBlocking (Cons x acc)
-        Just y  -> putMVar arrived (reverse acc) >> return y
+      let done y = putMVar arrived (reverse acc) >> return y
+      case x of
+        Left msg -> case check msg of
+          Nothing -> checkBlocking (Cons msg acc)
+          Just y  -> done y
+        Right y ->
+          done y
 
     -- checkNonBlocking is only called if there is no timeout
     checkNonBlocking :: StrictList a -> IO (Maybe b)
     checkNonBlocking acc = do
       -- tryReadTChan is *not* interruptible
-      mx <- atomically $ tryReadTChan incoming
+      mx <- atomically $ fmap Just waitIncoming `orElse` return Nothing
+      let done y = putMVar arrived (reverse acc) >> return (Just y)
       case mx of
         Nothing -> putMVar arrived (reverse acc) >> return Nothing
-        Just x  -> case check x of
-          Nothing -> checkNonBlocking (Cons x acc)
-          Just y  -> putMVar arrived (reverse acc) >> return (Just y)
+        Just x  -> case x of
+          Left msg -> case check msg of
+            Nothing -> checkNonBlocking (Cons msg acc)
+            Just y  -> done y
+          Right y ->
+            done y
 
     check :: a -> Maybe b
     check = checkMatches matches
